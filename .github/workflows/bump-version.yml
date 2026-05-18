@@ -12,6 +12,7 @@ jobs:
     env:
       OWNER: FriesI23
       REPO: mhabit
+      FLATPAK_FLUTTER_VERSION: 0.14.1
       PATCH_NAME: changes.patch
     outputs:
       patch-name: ${{ env.PATCH_NAME }}
@@ -30,14 +31,14 @@ jobs:
         with:
           python-version: "3.10"
       - run: |
-          python -m pip install --upgrade pip
-          pip install packaging pyyaml toml
-      - run: |
           cd ..
-          curl -L https://github.com/TheAppgineer/flatpak-flutter/archive/refs/tags/0.7.3.tar.gz \
+          curl -L https://github.com/TheAppgineer/flatpak-flutter/archive/refs/tags/${{ env.FLATPAK_FLUTTER_VERSION }}.tar.gz \
             -o flatpak-flutter.tar.gz
           tar -xzf flatpak-flutter.tar.gz
-          mv flatpak-flutter-0.7.3 flatpak-flutter
+          mv flatpak-flutter-${{ env.FLATPAK_FLUTTER_VERSION }} flatpak-flutter
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r ../flatpak-flutter/requirements.txt
       - name: Get Latest Release
         id: release-info
         env:
