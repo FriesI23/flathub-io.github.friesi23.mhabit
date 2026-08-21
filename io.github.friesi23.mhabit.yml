@@ -55,8 +55,8 @@ modules:
     sources:
       - type: git
         url: https://github.com/FriesI23/mhabit.git
-        tag: v1.24.2+156
-        commit: bea05a7b4b6c4ec33d091f52405ca1e48d0e8587
+        tag: v1.26.7+180
+        commit: 1dc256e42c57947366c608ef665876b99fa5eb4a
         disable-submodules: true
       - generated/sources/pubspec.json
     modules:
