@@ -50,14 +50,14 @@ jobs:
             gh release list \
               --exclude-pre-releases \
               --exclude-drafts \
-              --repo $REPO \
+              --repo "$REPO" \
               --limit 1 \
               --json tagName \
               --jq '.[0].tagName'
           )
-          COMMIT=$(gh api repos/$REPO/git/ref/tags/$TAG -q .object.sha)
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+          COMMIT=$(gh api "repos/$REPO/commits/$TAG" --jq .sha)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
       - name: Show Release Info
         run: |
           echo "Latest tag: ${{ steps.release-info.outputs.tag }}"
@@ -93,17 +93,69 @@ jobs:
           '(.modules[].sources[] | select(.url == env(URL)) | .tag) = env(NEW_TAG)
           | (.modules[].sources[] | select(.url == env(URL)) | .commit) = env(NEW_COMMIT)'
           "$FILE"
+      - name: Sync Flutter SDK tag
+        id: flutter-sdk
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_CI_TOKEN }}
+          APP_REPO: ${{ env.OWNER }}/${{ env.REPO }}
+          RELEASE_COMMIT: ${{ steps.release-info.outputs.commit }}
+          FILE: flatpak-flutter.yml
+        run: |
+          export APP_URL="https://github.com/$APP_REPO.git"
+          SOURCE='.modules[] | select(.name == "mhabit") | .sources[] | select(.type == "git")'
+          APP_COMMIT=$(yq -er "$SOURCE | select(.url == strenv(APP_URL)) | .commit" "$FILE")
+          if [[ ! "$APP_COMMIT" =~ ^[0-9a-f]{40}$ || "$APP_COMMIT" != "$RELEASE_COMMIT" ]]; then
+            echo "Manifest app commit '$APP_COMMIT' does not match release commit '$RELEASE_COMMIT'." >&2
+            exit 1
+          fi
+
+          SDK_COMMIT=$(gh api "repos/$APP_REPO/git/trees/$APP_COMMIT" --jq \
+            '.tree[] | select(.path == ".flutter" and .mode == "160000" and .type == "commit") | .sha')
+          if [[ ! "$SDK_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "No .flutter gitlink found in app commit $APP_COMMIT." >&2
+            exit 1
+          fi
+
+          SDK_SOURCE="$SOURCE | select(.dest == \"flutter\")"
+          SDK_URL=$(yq -er "$SDK_SOURCE | .url" "$FILE")
+          CURRENT_TAG=$(yq -er "$SDK_SOURCE | .tag" "$FILE")
+          if [[ ! "$CURRENT_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected one stable Flutter tag in $FILE, found '$CURRENT_TAG'." >&2
+            exit 1
+          fi
+
+          SDK_TAG=$(git ls-remote --tags -- "$SDK_URL" 'refs/tags/[0-9]*' |
+            awk -v sha="$SDK_COMMIT" '$1 == sha {
+              sub(/^refs\/tags\//, "", $2)
+              sub(/\^\{\}$/, "", $2)
+              if ($2 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) print $2
+            }')
+          if [[ ! "$SDK_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected exactly one stable Flutter tag for $SDK_COMMIT, found '$SDK_TAG'." >&2
+            exit 1
+          fi
+
+          if [[ "$SDK_TAG" != "$CURRENT_TAG" ]]; then
+            SDK_TAG="$SDK_TAG" yq -i "($SDK_SOURCE | .tag) = strenv(SDK_TAG)" "$FILE"
+            printf 'previous_tag=%s\n' "$CURRENT_TAG" >> "$GITHUB_OUTPUT"
+          fi
       - name: Check for changes
         id: diff
         run: |
           python3 scripts/update-sqlite3-foreign.py
-          git diff --quiet || echo "changed=true" >> $GITHUB_OUTPUT
+          git diff --quiet || echo "changed=true" >> "$GITHUB_OUTPUT"
       - name: Build Flatpak Flutter
         if: steps.diff.outputs.changed == 'true'
+        env:
+          PREVIOUS_FLUTTER_TAG: ${{ steps.flutter-sdk.outputs.previous_tag }}
         run: |
           mkdir -p assets/l10n
           touch assets/l10n/_untranslated.json
           python3 ../flatpak-flutter/flatpak-flutter.py flatpak-flutter.yml
+          if [[ -n "$PREVIOUS_FLUTTER_TAG" ]]; then
+            rm -f -- "generated/modules/flutter-sdk-$PREVIOUS_FLUTTER_TAG.json"
+          fi
           rm -fr assets
       - name: Create PR
         if: steps.diff.outputs.changed == 'true'
